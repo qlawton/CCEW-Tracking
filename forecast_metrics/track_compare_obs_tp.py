@@ -1,0 +1,405 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+
+import xarray as xr
+import numpy as np
+from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
+import os
+import cartopy.crs as ccrs
+import pandas as pd
+import pickle 
+from cartopy.mpl.ticker import LongitudeFormatter
+import sys
+
+
+model_in = sys.argv[1]
+save_dir = '/glade/work/qlawton/CCEW_TRACKS/TP/FULL_DAILY_MEAN/'+model_in.upper()+'/'
+olr_data = '/glade/work/qlawton/DATA/IMERG/DAILY_FILTERED_WITH_LATE/daily_mean_padded_imerg-daily.Kelvin.nc'
+ref_data = '/glade/work/qlawton/DATA/IMERG/DAILY_FILTERED_WITH_LATE/VAR/daily_mean_var-daily-Kelvin.nc'
+ref_tracks = '/glade/work/qlawton/CCEW_TRACKS/DAILY_IMERG_FULL_WITH_LATE/padded_daily_mean_CCKW_tracks_2001-2024_full_adj_seam_signal_init_1_cont_0.25.nc'
+ref_xr = xr.open_dataset(ref_data)
+
+pad_len = 30
+model_only = False
+model_len_hr = 15*24
+lon_thresh = int(sys.argv[2])
+file_beg = 'CCKW_tracks_init_1_cont_0.25_Kelvin_obs_for_'+model_in+'_'
+ref_tracks_xr = xr.open_dataset(ref_tracks).isel(time=slice(pad_len, -pad_len))
+
+# start_date = datetime(2023, 8, 29, 0, 0) 
+# #start_date = datetime(2024, 4, 1, 0, 0)
+# end_date = datetime(2024, 9, 1, 0, 0)
+
+start_date = datetime(2018, 6, 6, 0, 0)
+end_date = datetime(2019, 6, 4, 0, 0)
+
+
+# #### END MANUAL INPUT
+
+delta = timedelta(days=3)
+
+date_list = []
+current_date = start_date
+while current_date <= end_date:
+    formatted_date = current_date.strftime('%Y%m%d%H')
+    date_list.append(formatted_date)
+    current_date += delta
+
+
+ext_list = []
+orig_list = []
+
+for date_i in range(len(date_list)):
+    date = date_list[date_i]
+    date_new = datetime.strftime(datetime.strptime(date, '%Y%m%d%H'), '%Y-%m-%d-%H')
+    print(date_new)
+    ext_file = save_dir+file_beg+date+'_extended_length_padded.nc'
+    orig_file = save_dir+file_beg+date+'_orig_length_padded.nc'
+    ext_list.append(xr.open_dataset(ext_file).isel(time=slice(pad_len, -pad_len)).sel(time=slice(date_new, None)))
+    orig_list.append(xr.open_dataset(orig_file).isel(time=slice(pad_len, -pad_len)).sel(time=slice(date_new, None)))
+
+
+olr_data_xr = (xr.open_dataset(olr_data).precipitation/np.sqrt(ref_xr.precipitation)).isel(time=slice(pad_len, -pad_len))
+
+olr_hov_xr = olr_data_xr.sel(lat=slice(-10, 10)).mean(dim='lat')
+olr_hov_xr.coords['lon'] = (olr_hov_xr.coords['lon'] + 180) % 360 - 180
+olr_hov_xr = olr_hov_xr.sortby(olr_hov_xr.lon)
+
+
+# ### Test out some logic for computing forecast skill
+def find_matches(compare_tracks, ref_tracks, lon_thresh):
+    final_match_list = []
+    final_min_list = []
+    final_time_list = []
+    final_wave_number_list = []
+    ### We first just want to focus on systems in the time range of our "model" run
+    st_time = compare_tracks.time.values[0]
+    end_time = compare_tracks.time.values[-1]
+    ref_tracks = ref_tracks.sel(time=slice(st_time, end_time)).dropna(dim='system', how='all')
+    
+    for cmp_wv_i in range(len(compare_tracks.system)):
+        #print('Testing wave: ', cmp_wv_i)
+        wave_cmp = compare_tracks.isel(system = cmp_wv_i)#.dropna(dim='time')
+
+        if len(wave_cmp.CCKW_str.dropna('time').time) == 0:
+            #print('Empty slice, continuing...')
+            continue
+        
+        yr_st = wave_cmp.time.dt.year.values[0]
+        yr_end = wave_cmp.time.dt.year.values[-1]
+
+        match_list = []
+        min_dist_list = []
+        first_match_time_list = []
+        for ref_wv_i in range(len(ref_tracks.system)):
+            #print('Reference wave')
+            wave_ref = ref_tracks.isel(system=ref_wv_i)#.dropna(dim='time')
+            if len(wave_ref.CCKW_str.dropna('time').time)==0:
+                continue
+            ref_st = wave_ref.time.dt.year.values[0]
+            ref_end = wave_cmp.time.dt.year.values[0]
+
+            if np.isin(np.array(ref_st, ref_end), np.array(yr_st, yr_end)).any() == False:
+                continue
+
+            
+            overlap = wave_cmp['time'].isin(wave_ref['time'])
+
+            overlap_exists = overlap.any().item()
+            if overlap_exists == False:
+                continue
+            
+            abs_diff_lon = np.abs((wave_cmp['CCKW_lon'] - wave_ref['CCKW_lon']))
+            abs_diff_lon = abs_diff_lon.where(abs_diff_lon<=lon_thresh, drop=True)
+            if len(abs_diff_lon) == 0: #If they aren't...gonn have to skip
+                continue
+            #print('Match found')
+            match_list.append(wave_ref.system.values)
+            min_dist_list.append(abs_diff_lon.min())
+            first_match_time_list.append(abs_diff_lon.time.values[0])
+        if len(match_list) == 0:
+            final_match_list.append([np.nan])
+            final_min_list.append([np.nan])
+            final_time_list.append([np.nan])
+        else:
+            final_match_list.append(match_list)
+            final_min_list.append(min_dist_list)
+            final_time_list.append(first_match_time_list)
+        final_wave_number_list.append(wave_cmp.system.values)
+    return final_wave_number_list, final_match_list, final_min_list, final_time_list
+###
+ref_tracks_in = ref_tracks_xr.copy()
+
+if model_only == True:
+    print('orig list')
+    compare_tracks_in = orig_list.copy()
+else:
+    compare_tracks_in = ext_list.copy()
+
+model_run_wave_nums = []
+model_run_matches = [] 
+model_run_mins = []
+model_run_times = []
+
+for i in range(len(compare_tracks_in)):
+    print('Running on Model Number:', i+1)
+    #wv_out, match_out, mins_out, times_out = find_matches(compare_tracks_in[i].isel(time=slice(pad_len, -pad_len+1)), ref_tracks_in, lon_thresh)
+    wv_out, match_out, mins_out, times_out = find_matches(compare_tracks_in[i], ref_tracks_in, lon_thresh)
+    model_run_wave_nums.append(wv_out)
+    model_run_matches.append(match_out)
+    model_run_mins.append(mins_out)
+    model_run_times.append(times_out)
+
+final_connect_wave_count = []
+final_ghost_wave_count = []
+for i in range(len(model_run_matches)):
+    d_in = model_run_matches[i]
+    ## Count number of nans
+    connect_count = 0
+    ghost_count = 0
+    for j in range(len(d_in)): # Loop over and check if NaN or not
+        if any(np.isnan(d_in[j])):
+            ghost_count=ghost_count+1
+        else:
+            connect_count=connect_count+1
+    final_connect_wave_count.append(connect_count)
+    final_ghost_wave_count.append(ghost_count)
+final_connect_wave_count = np.array(final_connect_wave_count)
+final_ghost_wave_count = np.array(final_ghost_wave_count)
+
+connect_count_xr = xr.DataArray(final_connect_wave_count, 
+                                coords = [date_list],
+                                dims=['model_run'])
+ghost_count_xr = xr.DataArray(final_ghost_wave_count, 
+                                coords = [date_list],
+                                dims=['model_run'])
+
+
+# ## Now, we are going to go back and loop over our reference waves. We want to know, for
+# ## each model sample: which waves are connected to them, and if the model does not pick up any of the
+# ## potentially connected waves that supposedly should be there. 
+
+# ## We want to first cut down to a big range across all the models,
+# ## then for each model run we then cut down a bit more to test which "should" be there
+
+earliest_time = compare_tracks_in[0].time[0]
+latest_time = compare_tracks_in[-1].time[-1]
+ref_tracks_for_loop = ref_tracks_in.sel(time=slice(earliest_time, latest_time)).dropna(dim='system', how='all')
+
+ref_system_num_list = []
+model_system_i_list = []
+full_wave_connect_model = []
+for ref_i in range(len(ref_tracks_for_loop.system)):
+    connect_waves_model = []
+    system_in = ref_tracks_for_loop.system.isel(system=ref_i).values
+    for i in range(len(model_run_matches)):
+        model_system_i_list.append(i)
+
+        matches_in = model_run_matches[i]
+        waves_in = model_run_wave_nums[i]
+        matches_list = []
+
+        for mi in range(len(matches_in)):
+            if system_in in matches_in[mi]:
+                matches_list.append(waves_in[mi])
+        if len(matches_list) != 0:        
+            connect_waves_model.append(matches_list)
+        else:
+            connect_waves_model.append([np.array(np.nan)])
+    full_wave_connect_model.append(connect_waves_model)
+    ref_system_num_list.append(system_in)
+
+
+# ## So what do I want to know?
+# 1. Percentage of "models" that captured a CCEW at all | only do for CCEWs that "exist" during their timeframe
+# 3. The average track error for each wave
+# 4. The average strength error for each wave
+# 5. The average strength/track error as a function of lead time
+#
+# ### Consider differentiating based on whether a CCEW formed during a model run or existed 
+
+
+compare_earliest = []
+compare_latest = []
+
+final_hit_list = []
+final_miss_list = []
+final_success_rate = []
+final_success_rate_exist = []
+
+for i in range(len(date_list)):
+    date_in = datetime.strptime(date_list[i], '%Y%m%d%H')
+    compare_earliest.append(date_in)
+    compare_latest.append(date_in+timedelta(hours=model_len_hr))
+
+for ref_wave_i in range(len(ref_system_num_list)):
+    ref_wave_num = ref_system_num_list[ref_wave_i]
+    ref_wave_xr = ref_tracks_xr.sel(system=ref_wave_num).dropna(dim='time')
+
+    ref_wave_st = ref_wave_xr.time.values[0]
+    ref_wave_end = ref_wave_xr.time.values[-1]
+
+    ### Compute the eligible hits and misses
+    eligible_hit = []
+    eligible_miss = []
+    eligible_hit_exist = []
+    eligible_miss_exist = []
+    for dt_i in range(len(date_list)):
+        #Check if dates overlap
+        if (pd.to_datetime(ref_wave_st) < compare_latest[dt_i]) & (compare_earliest[dt_i] < pd.to_datetime(ref_wave_end)):
+            if pd.to_datetime(ref_wave_st) <= compare_earliest[dt_i]: #Only "existing" waves included
+                model_cmp_in = full_wave_connect_model[ref_wave_i][dt_i]
+                if any(np.isnan(model_cmp_in)):
+                    eligible_miss_exist.append(date_list[dt_i])
+                else:
+                    eligible_hit_exist.append(date_list[dt_i])    
+            
+            #if they do, check for hits
+            model_cmp_in = full_wave_connect_model[ref_wave_i][dt_i]
+            if any(np.isnan(model_cmp_in)):
+                eligible_miss.append(date_list[dt_i])
+            else:
+                eligible_hit.append(date_list[dt_i])
+    if (len(eligible_hit)+len(eligible_miss)) == 0: #Elimiate division by zero
+        success_rate = np.nan
+    else:
+        success_rate = len(eligible_hit)/(len(eligible_hit)+len(eligible_miss))
+    if (len(eligible_hit_exist)+len(eligible_miss_exist)) == 0: #Eliminate division by zero
+        success_rate_exist = np.nan
+    else:
+        success_rate_exist = len(eligible_hit_exist)/(len(eligible_hit_exist)+len(eligible_miss_exist))
+    final_hit_list.append(eligible_hit)
+    final_miss_list.append(eligible_miss)
+    final_success_rate.append(success_rate)
+    final_success_rate_exist.append(success_rate_exist)
+hit_count = np.array([len(i) for i in final_hit_list])
+miss_count = np.array([len(i) for i in final_miss_list])
+total_eligible = hit_count+miss_count
+
+
+# ## Make array with eligible hits vs. misses vs. NaN
+
+hit_miss_arr = np.ones((len(ref_tracks_for_loop.system), len(date_list)))*np.nan
+hit_miss_xr = xr.DataArray(
+    hit_miss_arr,
+    coords = [ref_tracks_for_loop.system.values, date_list], 
+    dims = ["system", "model_run"],
+    name="Hit/Miss Model Array")
+
+for ref_wave_i in range(len(ref_system_num_list)):
+    sys_in = ref_system_num_list[ref_wave_i]
+    hit_list_in = final_hit_list[ref_wave_i]
+    miss_list_in = final_miss_list[ref_wave_i]
+    hit_miss_xr.loc[{'system': sys_in, 'model_run':hit_list_in}] = 1
+    hit_miss_xr.loc[{'system': sys_in, 'model_run':miss_list_in}] = 0
+
+
+def get_system_length(data_in, data_res=1):
+    final_lens = []
+    for sys_i in range(len(data_in.system)):
+        slc_in = data_in.isel(system=sys_i).dropna(dim='time')
+        days = len(slc_in.time.values)*data_res
+        final_lens.append(days)
+    return np.array(final_lens)
+
+ref_mean_str = ref_tracks_xr.sel(system = ref_system_num_list).CCKW_str.mean(dim = 'time')
+ref_max_str = ref_tracks_xr.sel(system = ref_system_num_list).CCKW_str.min(dim = 'time')
+ref_sys_len = get_system_length(ref_tracks_xr.sel(system = ref_system_num_list))
+
+# ## Compute the track and strength error
+# ### Outputs
+# 1. Average Track and Strength error, per reference wave and per model
+# 2. The specific track and strength error across all timesteps, per model
+# 3. For two, if there are multiple waves, likely do not overlap so try and append them to one another
+
+track_error_xr = xr.full_like(ref_tracks_for_loop.CCKW_lon, np.nan).expand_dims(model_run=date_list).copy()
+str_error_xr = xr.full_like(ref_tracks_for_loop.CCKW_lon, np.nan).expand_dims(model_run=date_list).copy()
+model_track_xr = xr.full_like(ref_tracks_for_loop.CCKW_lon, np.nan).copy().expand_dims(model_run=date_list).copy()
+model_str_xr = xr.full_like(ref_tracks_for_loop.CCKW_lon, np.nan).copy().expand_dims(model_run=date_list).copy()
+ref_track_xr = xr.full_like(ref_tracks_for_loop.CCKW_lon, np.nan).copy().expand_dims(model_run=date_list).copy()
+ref_str_xr = xr.full_like(ref_tracks_for_loop.CCKW_lon, np.nan).copy().expand_dims(model_run=date_list).copy()
+exist_times_xr = xr.full_like(ref_tracks_for_loop.CCKW_lon, np.nan).copy().expand_dims(model_run=date_list).copy()
+for ref_wave_i in range(len(ref_system_num_list)):
+    ref_wave_num = ref_system_num_list[ref_wave_i]
+    ref_wave_xr = ref_tracks_for_loop.sel(system=ref_wave_num).dropna(dim='time')
+    ref_data_full = ref_tracks_for_loop.sel(system=ref_wave_num) 
+    eligible_hits = final_hit_list[ref_wave_i]
+    eligible_misses = final_miss_list[ref_wave_i]
+    for dt_i in range(len(eligible_hits)):
+        model_i = date_list.index(eligible_hits[dt_i]) #Find the model we are using
+        waves_in = full_wave_connect_model[ref_wave_i][model_i] #Pull out the waves
+        tracks_to_compare = compare_tracks_in[model_i]
+        if len(waves_in) > 1: #If we have more than one wave, let's combine them
+            step = 0
+            for i in range(len(waves_in)):
+                if step == 0:
+                    combined_tracks = tracks_to_compare.CCKW_lon.sel(system = waves_in[i])
+                    combined_str = tracks_to_compare.CCKW_str.sel(system=waves_in[i])
+                else:
+                    
+                    combined_tracks = combined_tracks.combine_first(tracks_to_compare.CCKW_lon.sel(system = waves_in[i]))
+                    combined_str = combined_str.combine_first(tracks_to_compare.CCKW_str.sel(system=waves_in[i]))
+                step = step+1
+        else: #Otherwise, jsut set this variable
+            combined_tracks = tracks_to_compare.CCKW_lon.sel(system = waves_in[0])
+            combined_str = tracks_to_compare.CCKW_str.sel(system = waves_in[0])
+
+        ### Next we compute the differences
+
+        track_error = ((combined_tracks - ref_wave_xr.CCKW_lon ) + 180) % 360 - 180 ## Compute and normalize
+        str_error = combined_str*-1 - ref_wave_xr.CCKW_str*-1 
+
+        track_error_xr.loc[{'system': ref_wave_num, 'time': track_error.time, 'model_run':eligible_hits[dt_i]}] = track_error
+        str_error_xr.loc[{'system': ref_wave_num, 'time': str_error.time, 'model_run':eligible_hits[dt_i]}] = str_error
+        ## Now we have an error, but we need to denote where the error is because the model wave doesn't exist
+        ## or where the model wave exists but the other one doesn't 
+
+                ### Now we save out the corresponding "raw" data
+        model_track_xr.loc[{'system': ref_wave_num, 'time':combined_tracks.time,  'model_run':eligible_hits[dt_i]}] = combined_tracks.squeeze()
+        model_str_xr.loc[{'system': ref_wave_num, 'time':combined_str.time,  'model_run':eligible_hits[dt_i]}] = combined_str.squeeze()
+        ref_track_xr.loc[{'system': ref_wave_num, 'time':ref_wave_xr.CCKW_lon.time,  'model_run':eligible_hits[dt_i]}] = ref_wave_xr.CCKW_lon.squeeze()
+        ref_str_xr.loc[{'system': ref_wave_num, 'time':(ref_wave_xr.CCKW_str*-1).time,  'model_run':eligible_hits[dt_i]}] = (ref_wave_xr.CCKW_str*-1).squeeze()
+
+        final_array = xr.full_like(combined_tracks, np.nan).copy()
+        # Set 2 where combined_tracks exists and CCKW_lon does not (i.e., is NaN)
+        final_array[~np.isnan(combined_tracks) & np.isnan(ref_data_full.CCKW_lon)] = 2
+        # Set 1 where CCKW_lon exists (i.e., is not NaN) and combined_tracks also exists
+        final_array[~np.isnan(ref_data_full.CCKW_lon) & ~np.isnan(combined_tracks)] = 1
+        # Set 0 where CCKW_lon exists (i.e., is not NaN) and combined_tracks does not
+        final_array[~np.isnan(ref_data_full.CCKW_lon) & np.isnan(combined_tracks)] = 0
+
+        exist_times_xr.loc[{'system': ref_wave_num, 'time':combined_tracks.time,  'model_run':eligible_hits[dt_i]}] = final_array
+
+RMSE_str_xr = np.sqrt(np.power(str_error_xr, 2))
+RMSE_track_xr = np.sqrt(np.power(track_error_xr, 2))
+
+output_data_xr = xr.merge([hit_miss_xr.to_dataset(name='success_bool'), track_error_xr.to_dataset(name='track_error'),
+                           str_error_xr.to_dataset(name='str_error'), RMSE_track_xr.to_dataset(name='track_RMSE'),
+                           RMSE_str_xr.to_dataset(name='str_RMSE'), connect_count_xr.to_dataset(name='connect_count'),
+                           ghost_count_xr.to_dataset(name='ghost_count'),model_track_xr.to_dataset(name='model_tracks'), 
+                           model_str_xr.to_dataset(name='model_str'),
+                           ref_track_xr.to_dataset(name='ref_tracks'), ref_str_xr.to_dataset(name='ref_str'),
+                           exist_times_xr.to_dataset(name='exist_compare')])
+
+
+import pickle
+output_dir = '/glade/work/qlawton/DATA/FORECAST_EVAL/DAILY_MEAN/'+model_in.upper()+'/CUT_TP/'
+
+if model_only == True:
+    print('model only')
+    output_save_name = output_dir+model_in+'_'+str(lon_thresh)+'lon_model_only_updated_with_raw_ext_error_data.nc'
+    dump_ref_name = output_dir+model_in+'_'+str(lon_thresh)+'lon_model_only_updated_with_raw_ext_matching_wave_nums.pkl'
+else:
+    output_save_name = output_dir+model_in+'_'+str(lon_thresh)+'lon_updated_with_raw_ext_error_data.nc'
+    dump_ref_name = output_dir+model_in+'_'+str(lon_thresh)+'lon_updated_with_raw_ext_matching_wave_nums.pkl'
+print(output_save_name, dump_ref_name)
+
+file = open(dump_ref_name, 'wb')
+pickle.dump(full_wave_connect_model, file)
+file.close()
+output_data_xr.to_netcdf(output_save_name)
+
+
+
