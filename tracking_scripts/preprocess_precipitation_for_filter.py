@@ -11,7 +11,7 @@ It outputs padded datasets for both the original and extended lengths, which can
 
 "Original" length refers to the data as it is, while "extended" length includes additional padding with observation data to account for edge effects in filtering. 
 
-Note that there are several hard-coded values in this script, such as the latitude range and the time resolution, which may need to be adjusted based on the specific dataset and analysis requirements.x
+Note that there are several hard-coded values in this script, such as the latitude range and the time resolution, which may need to be adjusted based on the specific dataset and analysis requirements.
 """
 
 import xarray as xr

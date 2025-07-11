@@ -2,13 +2,24 @@
 # coding: utf-8
 
 """
-This script reads in data from a user specified file and filters it for
-a specified region in wavenumber - frequency space.
-User must set filename and path for input and output files, define start
-and end time of the data, define the region to filter for, set the latitude
-range to filter and specify the number of observations per day of the input
-data.
-This can be very slow if the data is high spatial and temporal resolution.
+FFT_filter_imerg_daily_mean.py
+
+Adapted from Maria Gehne's "Tropical Diagnostics" package  
+Author: Q. Lawton, NCAR  
+Date: 2024-01-15
+
+Description:
+    This script reads precipitation data from a user-specified NetCDF file and applies 
+    filtering in wavenumber-frequency space for a specified region. 
+    The user must set:
+        - Input and output file paths
+        - Start and end time of the data
+        - Filtering region parameters
+        - Latitude range to filter
+        - Number of observations per day
+
+Note:
+    Filtering can be slow for high spatial and temporal resolution datasets.
 """
 import numpy as np
 import xarray as xr
@@ -24,24 +35,27 @@ pathout = '/glade/work/qlawton/DATA/IMERG/DAILY_FILTERED_WITH_LATE/'
 
 daily = True
 input_6hr = False
+# If input_6hr is True, then the data is 6-hourly and daily is False.
+# If input_6hr is False, then the data is daily and daily is True.
+# If daily is True, then the data is daily and input_6hr is False.
+
 ### List of waves to loop over
-#wavelist = ['Kelvin', 'ER', 'MRG', 'MJO']
-#wavelist = ['MRG'] #Re-run with a WH99 definition of MRGs, not the 2-6 bandpass from Gehne et al. (2022)
-wavelist = ['TD']
+wavelist = ['TD'] #Can be 'Kelvin', 'MRG', 'IG1', 'ER', 'TD' 
 
 # number of obs per day
 if daily==True:
     spd = 1
 else:
     spd = 4
-pad_num=int(30*spd)
-datestrt = "1998-01-01"
-datelast = "2024-10-30-18"
+pad_num=int(30*spd) # # number of time steps to pad the data with zeros at the beginning and end
+
+datestrt = "1998-01-01" # start date of the data
+datelast = "2024-10-30-18" # end date of the data
 
 for wvi in range(len(wavelist)):
     waveName = wavelist[wvi]
-    
-    # filename foxr filtered data
+
+    # filename for filtered data
     if daily==True:
         fileout = 'daily_mean_padded_imerg-daily'+'.'+waveName
     else:
