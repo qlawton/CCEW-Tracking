@@ -1,4 +1,5 @@
-# ccew_tracking
+# CCEW-Tracking
+### Tracking of convectively-coupled equatorial waves as objects from spatiotemporally filtered data.
 
 Python code to track wave objects and compute forecast statistics for tropical waves -- primarily Convectively Coupled Kelvin Waves (CCKWs), but with support for the "tropical depression (TD)" band and equatorial Rossby waves (n=1), in observational and model data.
 
@@ -17,7 +18,7 @@ These scripts were written in partial support for an in-progress manuscript:
 ## Main Scripts
 
 - `tracking_scripts/preprocess_precipitation_for_filter.py`: Preprocesses model and observational precipitation data, slices to desired latitude/time, and pads for filtering.
-- `tracking_scripts/FFT_filter_imerg_daily_mean.py`: Filters precipitation data in wavenumber-frequency space for specified wave types (Kelvin, TD, ER, etc.).
+- `tracking_scripts/FFT_filter_imerg_daily_mean.py`: Filters precipitation data in wavenumber-frequency space for specified wave types (Kelvin, TD, ER, etc.). Based on Wheeler and Kiladis (1999) and Maria Gehne's Tropical Diagnostics package.
 - `tracking_scripts/track_filtered_waves.py`: Tracks filtered wave systems (Kelvin, TD, ER) in precipitation data and outputs tracked longitude and strength.
 
 ## Supporting scripts
