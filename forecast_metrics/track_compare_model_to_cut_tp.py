@@ -3,8 +3,23 @@
 # %%
 
 # %%
+"""
+track_compare_model_to_cut_tp.py
+AUTHOR: Q. Lawton, NSF National Center for Atmospheric Research (NCAR)
+DATE: 2024-01-15
 
+This script compares model-generated tracks of Convectively Coupled Equatorial Waves (CCEW) to "cutdown reference" tracks, also known as "perfect forecast" observational tracks. The cutdown reference tracks are derived by truncating the full observational data to match the temporal length of the model data, allowing for direct comparison between model output and a baseline that reflects data that has spatio-temporally filtered over the same length of time.
 
+The workflow involves loading model tracks, cutdown reference tracks, and associated error metrics. For each model run, the script matches model-detected waves to the corresponding cutdown reference waves using temporal overlap and longitudinal proximity. It then computes hit/miss statistics, success rates, and errors in track position and wave strength for each matched wave. Additional metrics such as raw track and strength data, and summary statistics (e.g., maximum and mean strength, start/end longitude) are also calculated.
+
+All results are merged into a single xarray dataset and saved as NetCDF files for further analysis. The mapping between model and reference waves is saved as a pickle file. This process enables robust evaluation of model skill in tracking equatorial waves, using a reference that is directly comparable to the model forecast period.
+
+Usage:
+    python track_compare_model_to_cut_tp.py <model_name> <longitude_threshold>
+
+NOTE: Many paths are hard-coded, so ensure the directories and files exist as specified. The script requires xarray, numpy, pandas, matplotlib, and cartopy libraries.
+WARNING: The output RMSE values are not what was used in the paper and these should be recaculated by the user. 
+"""
 import xarray as xr
 import numpy as np
 from datetime import datetime, timedelta

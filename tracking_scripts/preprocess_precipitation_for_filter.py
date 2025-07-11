@@ -1,3 +1,19 @@
+"""
+preprocess_precipitation_for_filter.py
+
+AUTHOR: Q. Lawton, NSF National Center for Atmospheric Research (NCAR)
+DATE: 2024-01-15
+
+This script preprocesses precipitation data for spatio-temporal filtering.
+It loads model and observation data, slices it to the desired time and latitude range, and pads the data for further processing.
+The script is designed to handle both model and observation data, with options to only process observation data if specified.
+It outputs padded datasets for both the original and extended lengths, which can be used for further analysis or filtering.
+
+"Original" length refers to the data as it is, while "extended" length includes additional padding with observation data to account for edge effects in filtering. 
+
+Note that there are several hard-coded values in this script, such as the latitude range and the time resolution, which may need to be adjusted based on the specific dataset and analysis requirements.x
+"""
+
 import xarray as xr
 import numpy as np
 from datetime import datetime, timedelta

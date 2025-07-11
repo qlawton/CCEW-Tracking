@@ -1,29 +1,86 @@
+"""
+track_filtered_waves.py
+
+AUTHOR: Q. Lawton, NSF National Center for Atmospheric Research (NCAR)
+DATE: 2024-01-15
+
+This script tracks filtered atmospheric wave systems (Kelvin, Tropical Depression, or Equatorial Rossby waves) using IMERG precipitation data.
+It loads daily filtered precipitation data, applies wave tracking algorithms, and saves the tracked wave longitude and strength to a NetCDF file.
+Usage:
+    - Configure wave_type and input paths as needed.
+    - Run the script to process data and output tracked wave systems.
+Dependencies: xarray, numpy, pandas, scipy, datetime
+"""
+
 import xarray as xr
 import numpy as np
-import matplotlib.pyplot as plt
-import numpy as np
-from datetime import datetime, timedelta
-from scipy import signal, stats
+from datetime import datetime
+from scipy import signal
 import pandas as pd
-from matplotlib.lines import Line2D
-import sys
 
-model_in = sys.argv[3]
-test_save_path = '/glade/work/qlawton/CCEW_TRACKS/TP/FULL_DAILY_MEAN/'+str(model_in)+'/'
+### INPUT PATHS
+data_in_path = '/glade/work/qlawton/DATA/IMERG/DAILY_FILTERED_WITH_LATE/'
+var_in_path = '/glade/work/qlawton/DATA/IMERG/DAILY_FILTERED_WITH_LATE/VAR/'
 
+### DEFINITIONS
+
+wave_type = 'ER' # 'Kelvin', 'TD', or 'ER'
+N_or_S = 'S' ## Only for Rossby waves; track north or south of the equator
+
+t_res = 24 #hours, resolution of dataset
+if wave_type == 'Kelvin':
+    speed_thresh = 30 #m/s
+    day_cut = 3
+    direction = 'eastward'
+    lat_bin = [-10, 10]
+    save_name = 'CCKW'
+if wave_type == 'TD':
+    speed_thresh = 20 #m/s
+    day_cut = 3
+    direction = 'westward'
+    lat_bin = [0, 15]
+    save_name = 'TD'
+if wave_type == 'ER':
+    speed_thresh = 15 #m/s
+    day_cut = 3
+    direction = 'westward'
+
+    if N_or_S == 'N':
+        lat_bin = [0, 10]
+        save_name = 'ER_N'
+    elif N_or_S == 'S':
+        lat_bin = [-10, 0]
+        save_name = 'ER_S'
+    
+
+test_save_path = '/glade/work/qlawton/CCEW_TRACKS/DAILY_IMERG_FULL_WITH_LATE/'
+test_save_name = test_save_path+'padded_daily_mean_'+save_name+'_tracks_2001-2024_full_adj_seam_signal_init_1_cont_0.25.nc'
+
+#### COMPILE FULL PATH
+data_in = data_in_path+'daily_mean_padded_imerg-daily.'+wave_type+'.nc'
+var_in = var_in_path+'daily_mean_var-daily-'+wave_type+'.nc'
+
+#### Define the "speed limit" for connecting the waves
+lon_m = 111*1000 #m in a degree longitude at the equator
+m_limit = t_res*3600*speed_thresh #meters a wave can possibly travel west
+lon_limit = m_limit/lon_m
+back_allow = 5 #How many degrees backwards we allow connections...
 
 ##### FUNCTION DEFINITIONS
-def run_CCKW_tracker(data_in, lon_limit_in, prominence=1, cont_threshold = 0.5, init_threshold = 0.5, hgt_in=0, extend_data = True, extension_size = 10):
+def run_CCKW_tracker(data_in, lon_limit_in, prominence=1, cont_threshold = 0.5, init_threshold = 0.5, hgt_in=0, extend_data = True, extension_size = 10, direction = 'westward'):
     thr_in = prominence
     lon_limit = lon_limit_in
     time_in_dt = pd.to_datetime(data_in.time)
     empty_stack = np.ones((1, np.shape(time_in_dt)[0]))*np.nan
 
+    # if flip_lon == True:
+    #     data_in = data_in.copy()
+    #     data_in['longitude'] = -1 * data_in['longitude']
+    
     for tm_i in range(len(time_in_dt)): #Loop over the data
         tm_raw_in = pd.to_datetime(data_in.time)[tm_i]
-        #tm_in = datetime.strftime(tm_raw_in, '%Y-%m-%d-%H')
-        
-        data_test = data_in.isel(time=tm_i)
+        tm_in = datetime.strftime(tm_raw_in, '%Y-%m-%d-%H')
+        data_test = data_in.isel(time=tm_i).squeeze()
         
         if extend_data == True:
             data_new = np.concatenate((data_test[-extension_size:], data_test, data_test[:extension_size]))
@@ -69,17 +126,37 @@ def run_CCKW_tracker(data_in, lon_limit_in, prominence=1, cont_threshold = 0.5, 
 
                 did_append = False
                 #### Here's another special case: if within "lon_limits" of the right seam (the +180 mark), and we don't actually have a close match, we check otherside
-                if (180 - prev_wv_lon <= lon_limit):
+                if direction == 'eastward':
+                    cmp_bool1 = (180 - prev_wv_lon <= lon_limit)
+                elif direction == 'westward':
+                    cmp_bool1 = (prev_wv_lon - (-180) <= lon_limit)
+                if cmp_bool1:
+                    if direction == 'eastward':
+                        possible = lon_valley >= prev_wv_lon
+                    elif direction == 'westward':
+                        possible = lon_valley <= prev_wv_lon
                     #print('Trying to append across')
-                    if not any(lon_valley >= prev_wv_lon): #if there are seemingly none to attach...
-                        dist_from_seam = 180 - prev_wv_lon
-                        adjusted_dist = (180+np.min(lon_valley))+dist_from_seam
+                    if not any(possible): #if there are seemingly none to attach...
+
+                        if direction == 'eastward':
+                            dist_from_seam = 180 - prev_wv_lon
+                            adjusted_dist = (180+np.min(lon_valley))+dist_from_seam
+                        elif direction == 'westward':
+                            dist_from_seam = prev_wv_lon - (-180)
+                            adjusted_dist = (180 - np.max(lon_valley)) + dist_from_seam    
                         #print(adjusted_dist)
                         if adjusted_dist <= lon_limit: #and if the closest one on left side is within bounds...
-                            nearest_lon = np.min(lon_valley)
-                            nearest_i = np.where(lon_valley == nearest_lon)[0][0]
-                            nearest_dist = nearest_lon - prev_wv_lon
+                            if direction == 'eastward':
+                                nearest_lon = np.min(lon_valley)
+                                nearest_i = np.where(lon_valley == nearest_lon)[0][0]
+                                nearest_dist = nearest_lon - prev_wv_lon
+                            if direction == 'westward':
+                                nearest_lon = np.max(lon_valley)
+                                nearest_i = np.where(lon_valley == nearest_lon)[0][0]
+                                nearest_dist = prev_wv_lon - nearest_lon
+                                
                             nearest_avgval = data_valley[nearest_i]
+                            
                             if nearest_i in (used_wv):
                                 #### We will check to see if we appended the closest one. If not, we want to 
                                 #### replaced the current one with the closest one, and previous the previous CCKW attachment
@@ -87,13 +164,24 @@ def run_CCKW_tracker(data_in, lon_limit_in, prominence=1, cont_threshold = 0.5, 
                                 other_wv_to_check = used_prev_wv[used_wv_loci]
                                 if np.isnan(other_wv_to_check):
                                     continue
-                                    
-                                if  act_lon[other_wv_to_check, tm_i]<0 and act_lon[other_wv_to_check, tm_i-1]>0: #if crossing discontinuity
-                                    seam_dist = 180 - act_lon[other_wv_to_check, tm_i-1]
-                                    new_dist =  act_lon[other_wv_to_check, tm_i] +180
-                                    previous_dist = seam_dist+new_dist
+                                if direction == 'eastward':
+                                    seam_cross = act_lon[other_wv_to_check, tm_i] < 0 and act_lon[other_wv_to_check, tm_i-1] > 0
+                                elif direction == 'westward':
+                                    seam_cross = act_lon[other_wv_to_check, tm_i] > 0 and act_lon[other_wv_to_check, tm_i-1] < 0   
+                                if seam_cross:
+                                    if direction == 'eastward':
+                                        seam_dist = 180 - act_lon[other_wv_to_check, tm_i-1]
+                                        new_dist = act_lon[other_wv_to_check, tm_i] + 180
+                                        previous_dist = seam_dist + new_dist
+                                    elif direction == 'westward':
+                                        seam_dist = act_lon[other_wv_to_check, tm_i-1] - (-180)
+                                        new_dist = 180 - act_lon[other_wv_to_check, tm_i]
+                                        previous_dist = seam_dist + new_dist
                                 else:
-                                    previous_dist = act_lon[other_wv_to_check, tm_i] - act_lon[other_wv_to_check, tm_i-1]
+                                    if direction == 'eastward':
+                                        previous_dist = act_lon[other_wv_to_check, tm_i] - act_lon[other_wv_to_check, tm_i-1]
+                                    elif direction == 'westward':
+                                        previous_dist = act_lon[other_wv_to_check, tm_i-1] - act_lon[other_wv_to_check, tm_i]
                                 if np.abs(nearest_dist) < np.abs(previous_dist):
                                     act_lon[other_wv_to_check, tm_i] = np.nan
                                     act_avgval[other_wv_to_check, tm_i] = np.nan
@@ -111,12 +199,19 @@ def run_CCKW_tracker(data_in, lon_limit_in, prominence=1, cont_threshold = 0.5, 
                             act_avgval[prev_wv, tm_i] = nearest_avgval
                             did_append = True                        
                             
-                if any(lon_valley >= prev_wv_lon) and did_append == False:
-                    ## Like before, will will find the closest longitude ~to east~ of previous and then check distance
-
-                    nearest_lon = np.array(lon_valley)[lon_valley >= prev_wv_lon].min()
+                if direction == 'eastward':
+                    possible = lon_valley >= prev_wv_lon
+                elif direction == 'westward':
+                    possible = lon_valley <= prev_wv_lon
+                
+                if any(possible) and did_append == False:
+                    if direction == 'eastward':
+                        nearest_lon = np.array(lon_valley)[possible].min()
+                        nearest_dist = nearest_lon - prev_wv_lon
+                    elif direction == 'westward':
+                        nearest_lon = np.array(lon_valley)[possible].max()
+                        nearest_dist = prev_wv_lon - nearest_lon
                     nearest_i = np.where(lon_valley == nearest_lon)[0][0]
-                    nearest_dist = nearest_lon - prev_wv_lon
                     
                     if nearest_i in (used_wv):
                         #### We will check to see if we appended the closest one. If not, we want to 
@@ -125,13 +220,26 @@ def run_CCKW_tracker(data_in, lon_limit_in, prominence=1, cont_threshold = 0.5, 
                         other_wv_to_check = used_prev_wv[used_wv_loci]
                         if np.isnan(other_wv_to_check):
                             continue
-                        if  act_lon[other_wv_to_check, tm_i]<0 and act_lon[other_wv_to_check, tm_i-1]>0: #if crossing discontinuity
-                            seam_dist = 180 - act_lon[other_wv_to_check, tm_i-1]
-                            new_dist =  act_lon[other_wv_to_check, tm_i] +180
-                            previous_dist = seam_dist+new_dist
+                        if direction == 'eastward':
+                            seam_cross = act_lon[other_wv_to_check, tm_i] < 0 and act_lon[other_wv_to_check, tm_i-1] > 0
+                        elif direction == 'westward':
+                            seam_cross = act_lon[other_wv_to_check, tm_i] > 0 and act_lon[other_wv_to_check, tm_i-1] < 0   
+                        if seam_cross:
+                            if direction == 'eastward':
+                                seam_dist = 180 - act_lon[other_wv_to_check, tm_i-1]
+                                new_dist = act_lon[other_wv_to_check, tm_i] + 180
+                                previous_dist = seam_dist + new_dist
+                            elif direction == 'westward':
+                                seam_dist = act_lon[other_wv_to_check, tm_i-1] - (-180)
+                                new_dist = 180 - act_lon[other_wv_to_check, tm_i]
+                                previous_dist = seam_dist + new_dist
                         else:
-                            previous_dist = act_lon[other_wv_to_check, tm_i] - act_lon[other_wv_to_check, tm_i-1]
-                        if np.abs(nearest_dist < previous_dist):
+                            if direction == 'eastward':
+                                previous_dist = act_lon[other_wv_to_check, tm_i] - act_lon[other_wv_to_check, tm_i-1]
+                            elif direction == 'westward':
+                                previous_dist = act_lon[other_wv_to_check, tm_i-1] - act_lon[other_wv_to_check, tm_i]
+
+                        if np.abs(nearest_dist) < np.abs(previous_dist):
                             act_lon[other_wv_to_check, tm_i] = np.nan
                             act_avgval[other_wv_to_check, tm_i] = np.nan
                             used_prev_wv[used_wv_loci] = np.nan
@@ -171,6 +279,8 @@ def run_CCKW_tracker(data_in, lon_limit_in, prominence=1, cont_threshold = 0.5, 
                 ### Repeat for any crests remaining, now checking the timestep prior to this one 
 
                 ### And finally, repeat a third time
+    # if flip_lon == True:
+    #     act_lon = -1 * act_lon
     return act_lon, act_avgval  
 
 def clean_up(act_lon, act_avgval, day_cut, t_res):
@@ -189,7 +299,7 @@ def clean_up(act_lon, act_avgval, day_cut, t_res):
                 new_act_avgval = np.vstack([new_act_avgval, act_avgval[row,:]])
     return new_act_lon, new_act_avgval
 
-def connect_tracks(AEW_lon_enter, AEW_avgval_enter):
+def connect_tracks(AEW_lon_enter, AEW_avgval_enter, direction = 'eastward'):
     AEW_lon_in = AEW_lon_enter.copy()
     AEW_avgval_in = AEW_avgval_enter.copy()
     st_list = []
@@ -203,7 +313,10 @@ def connect_tracks(AEW_lon_enter, AEW_avgval_enter):
     for i in range(len(st_list)):
         if end_list[i] in st_list: 
             paired_wv = np.where(end_list[i] == st_list)[0][0]
-            lon_diff = AEW_lon_in[paired_wv, end_list[i]] - AEW_lon_in[i, end_list[i]] # end_list[i] is the time for both. i is the time for wave we look at , paired_wv the compare one
+            if direction == 'eastward':
+                lon_diff = AEW_lon_in[paired_wv, end_list[i]] - AEW_lon_in[i, end_list[i]] # end_list[i] is the time for both. i is the time for wave we look at , paired_wv the compare one
+            elif direction == 'westward':
+                lon_diff = AEW_lon_in[i, end_list[i]] - AEW_lon_in[paired_wv, end_list[i]]
             if np.abs(lon_diff) <= lon_limit and lon_diff>=-back_allow: #If this is truely a connecting wave case...
                 averaged_point = np.mean([AEW_lon_in[paired_wv, end_list[i]],  AEW_lon_in[i, end_list[i]]])
                 
@@ -223,57 +336,9 @@ def connect_tracks(AEW_lon_enter, AEW_avgval_enter):
     return AEW_lon_in, AEW_avgval_in, changed_wv
                 ### now we are going to modify input data so that we can cascade down changes if necessary
 
-def best_fit_line(act_lon_in):
-    out_arr = np.ones(np.shape(act_lon_in))*np.nan
-    for sys in range(act_lon_in.shape[0]):
-        sys_in_slc = act_lon_in[sys,:] #This is our slice
-        ### But! We only want to pull out the non-nan ones
-        sys_in_slc_non_nan = sys_in_slc[~np.isnan(sys_in_slc)]
-        
-        if sys_in_slc_non_nan[0]>0 and sys_in_slc_non_nan[-1]<0: #If we cross the discontinuity...
-            ##### NOTE TO SELF: NANS GET INCLUDED ACROSS THE LINE. Will need to add special logic to account for this
-            #print('Special...')
-            sys_in_special = sys_in_slc_non_nan.copy()
-            sys_in_special[sys_in_special<0] = sys_in_special[sys_in_special<0]+360
-            result = stats.linregress(np.arange(len(sys_in_special)), sys_in_special)
-            new_line = (np.arange(len(sys_in_special))*result.slope + result.intercept) 
-            new_line[new_line>180] = new_line[new_line>180]-360
-            #print(new_line)
-            sys_in_final = sys_in_slc.copy()
-            sys_in_final[~np.isnan(sys_in_slc)] = new_line
-        else:
-            result = stats.linregress(np.arange(len(sys_in_slc_non_nan)), sys_in_slc_non_nan)
-            new_line = np.arange(len(sys_in_slc_non_nan))*result.slope + result.intercept
-
-            sys_in_final = sys_in_slc.copy()
-            sys_in_final[~np.isnan(sys_in_slc)] = new_line
-        
-        out_arr[sys,:] = sys_in_final
-    return out_arr
-
-# #### END OF FUNCTION DEFINITIONS
 
 # #### START OF ACTUAL CODE
 
-### DEFINITIONS
-lat_bin = [-10, 10]
-wave_type = 'Kelvin'
-t_res = 24 #hours, resolution of dataset
-if wave_type == 'Kelvin':
-    speed_thresh = 30 #m/s
-    day_cut = 3
-
-#### Other definitions
-lon_m = 111*1000 #m in a degree longitude at the equator
-m_limit = t_res*3600*speed_thresh #meters a wave can possibly travel west
-lon_limit = m_limit/lon_m
-back_allow = 5 #How many degrees backwards we allow connections...
-
-#### COMPILE FULL PATH
-data_in = sys.argv[1]
-var_in = sys.argv[2]
-
-test_save_name = test_save_path+'CCKW_tracks_init_1_cont_0.25_'+data_in
 
 ### LOAD IN THE FULL DATASET
 print('Loading in data...')
@@ -289,13 +354,15 @@ data_in_xr = data_in_xr.sortby(data_in_xr.lon)
 print('Averaging...')
 hov_data_in = data_in_xr.sel(lat = slice(lat_bin[0], lat_bin[-1])).mean(dim='lat')
 
+print(hov_data_in.shape)
 ### ADJUST INPUT DATA
 data_in_xr = data_in_xr.rename({'lon':'longitude','lat':'latitude'})
 hov_data_in = hov_data_in.rename({'lon':'longitude'})
 hov_data_test = hov_data_in#.sel(time = slice('1980-01-01', '1980-12-31'))
 
+### Adjust the "seam" of the data to be at 60W. This is a less active part of the globe, helping smooth out tracks.
 longitude_arr = hov_data_test.longitude.values
-longitude_arr = longitude_arr - 240
+longitude_arr = longitude_arr - 240 #Seam at 60W (240 degrees is +60W)
 
 longitude_arr[longitude_arr < -180] = longitude_arr[longitude_arr < -180] + 360
 hov_data_test['longitude'] = longitude_arr
@@ -303,29 +370,25 @@ hov_data_test = hov_data_test.sortby(hov_data_test.longitude)
 
 ### RUN CCKW IDENTIFICATION
 print('Running initial tracker')
-raw_act_lon, raw_act_avgval = run_CCKW_tracker(hov_data_test*-1, lon_limit, prominence = 0, cont_threshold = 0.25, init_threshold = 1)
+### NOTE: *-1 is hard coded to flip the sign of the data, as the CCKW tracker is designed to track positive anomalies using a trough method. So this flips data to identify valleys as peaks.
+raw_act_lon, raw_act_avgval = run_CCKW_tracker(hov_data_test*-1, lon_limit, prominence = 0, cont_threshold = 0.25, init_threshold = 1, direction = direction)
 print('connecting tracks')
-int_act_lon, int_act_avgval, changed_wv_out = connect_tracks(raw_act_lon, raw_act_avgval)
+int_act_lon, int_act_avgval, changed_wv_out = connect_tracks(raw_act_lon, raw_act_avgval, direction = direction)
 print('cleaning up tracks')
 final_act_lon, final_act_avgval = clean_up(int_act_lon, int_act_avgval, day_cut = day_cut, t_res = t_res)
 
-if len(final_act_lon) == 0: #If we have no waves
-    print('No CCKWS identified!')
-    final_act_lon = np.zeros((1, np.shape(hov_data_test.values)[0]))*np.NaN
-    final_act_avgval = final_act_lon.copy()
-    print(final_act_lon)
-
+print('Adjusting back to original longitude space')
+# Adjust longitude values to shift the seam back to the original space.
+# Longitudes less than or equal to -60 are shifted eastward by 240 degrees,
+# while longitudes greater than -60 are shifted westward by 120 degrees.
+# This logic ensures continuity across the artificial seam at 60W.
 
 new_act_lon = final_act_lon.copy()
-new_act_lon[final_act_lon<=-60] = final_act_lon[final_act_lon<=-60] + 240
-new_act_lon[final_act_lon>-60] = final_act_lon[final_act_lon>-60] - 120
+new_act_lon[final_act_lon <= -60] = final_act_lon[final_act_lon <= -60] + 240
+new_act_lon[final_act_lon > -60] = final_act_lon[final_act_lon > -60] - 120
 
 final_act_lon = new_act_lon
-
-if final_act_lon.ndim == 1: #Edge case, one only dimension!
-    print('Edge case! Only one dimension. Reshaping')
-    final_act_lon = final_act_lon.reshape(1, len(final_act_lon))
-    final_act_avgval = final_act_avgval.reshape(1, len(final_act_avgval))
+print('Creating XArray Object.')
 ### TURN INTO AN XARRAY OBJECT
 time_array = hov_data_test.time
 system_array = np.arange(0, final_act_lon.shape[0])+1
@@ -336,7 +399,7 @@ CCKW_track_xr = xr.DataArray(final_act_lon,
                                  system=(["system"], system_array),
                                  time=time_array),
                                  attrs=dict(
-                                     description="Longitude of Tracked CCKWs",
+                                     description="Longitude of Tracked "+save_name,
                                      units="deg")
                                  )
 CCKW_str_xr = xr.DataArray(final_act_avgval, 
@@ -345,11 +408,12 @@ CCKW_str_xr = xr.DataArray(final_act_avgval,
                                  system=(["system"], system_array),
                                  time=time_array),
                                  attrs=dict(
-                                     description="Strength of Tracked CCKWs",
+                                     description="Strength of Tracked "+save_name,
                                      units="standard deviation")
                                  )
 
-CCKW_combined_xr = xr.merge([CCKW_track_xr.to_dataset(name='CCKW_lon'), CCKW_str_xr.to_dataset(name='CCKW_str')])
+CCKW_combined_xr = xr.merge([CCKW_track_xr.to_dataset(name=save_name+'_lon'), CCKW_str_xr.to_dataset(name=save_name+'_str')])
 
+print('Saving Out')
 ### SAVE OUT
 CCKW_combined_xr.to_netcdf(test_save_name)

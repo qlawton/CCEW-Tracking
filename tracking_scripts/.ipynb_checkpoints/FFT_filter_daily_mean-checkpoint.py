@@ -28,7 +28,6 @@ print(filein)
 ### List of waves to loop over
 wavelist = ['Kelvin', 'ER', 'MRG', 'MJO']
 #wavelist = ['MRG'] #Re-run with a WH99 definition of MRGs, not the 2-6 bandpass from Gehne et al. (2022)
-
 # number of obs per day
 spd = int(24/t_res)
 
@@ -84,6 +83,14 @@ for wvi in range(len(wavelist)):
         tMax = 96
         kMin = 0
         kMax = 250
+        hMin = -9999
+        hMax = -9999
+    elif waveName == "TD":
+        # Matching method Rosi used in Rios-Berrios et al. (2023, JAMES)
+        tMin = -2.5
+        tMax = -12
+        kMin = 6
+        kMax = 250 #Super large to keep all big wavenumbers
         hMin = -9999
         hMax = -9999
     
